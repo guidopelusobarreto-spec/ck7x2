@@ -41,7 +41,7 @@ async function init() {
   S = load();
   if (!S && DEFAULTS) S = structuredClone(DEFAULTS);
   if (!S) S = { version: 1, dataDate: '', fx: { USD: 1.1206, INR: 108.3965, EUR: 1 }, products: [], vendors: [], offers: [], excluded: [] };
-  S.settings = Object.assign({ maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], payMode: 'any' }, S.settings || {});
+  S.settings = Object.assign({ maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], payMode: 'any', preferEU: false, euPct: 50 }, S.settings || {});
   bindTabs(); bindPlan(); bindSettings();
   renderAll();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
@@ -82,6 +82,16 @@ function optimize() {
     .filter(o => o.active && o.productId === p.id && vIndex.has(o.vendorId))
     .map(o => ({ o, vi: vIndex.get(o.vendorId), cost: offerEUR(o) * (p.qty || 1) }))
     .sort((a, b) => a.cost - b.cost));
+  // prioridad almacén UE: en péptidos con precio de referencia, si hay oferta UE dentro del techo, solo se usan ofertas UE
+  const euUsed = [], euNone = [];
+  if (st.preferEU) {
+    prods.forEach((p, i) => {
+      if (p.category !== 'Péptido' || !p.ref) return;
+      const cap = p.ref * (p.qty || 1) * (1 + (st.euPct ?? 50) / 100);
+      const eu = perProd0[i].filter(x => vend[x.vi].euWarehouse && x.cost <= cap + 1e-9);
+      if (eu.length) { perProd0[i] = eu; euUsed.push(p); } else euNone.push(p);
+    });
+  }
   // proveedores candidatos, ordenados por nº de productos en los que son los más baratos (mejores primero)
   const wins = new Map();
   perProd0.forEach(l => l.forEach((x, j) => wins.set(x.vi, (wins.get(x.vi) || 0) + (j === 0 ? 10 : 1))));
@@ -157,7 +167,7 @@ function optimize() {
   rec(0, 0, 0);
   const noOffer = prods.filter((p, i) => !perProd[i].length);
   const byFilter = noOffer.filter(p => S.offers.some(o => o.active && o.productId === p.id && vendorById(o.vendorId)?.active));
-  return { best, evaluated, nodes, ms: Math.round(performance.now() - t0), total: prods.length, noOffer, byFilter };
+  return { best, evaluated, nodes, ms: Math.round(performance.now() - t0), total: prods.length, noOffer, byFilter, euUsed, euNone };
 }
 
 function bindPlan() {
@@ -173,6 +183,8 @@ function readPlanControls() {
   st.minLevel = $('#minLevel').value;
   st.channels = $$('.chan').filter(c => c.checked).map(c => c.value);
   st.payMode = $('#payMode').value;
+  st.preferEU = $('#preferEU').checked;
+  st.euPct = Math.max(0, Math.min(300, num($('#euPct').value) ?? 50));
   save();
 }
 function renderPlanControls() {
@@ -180,6 +192,7 @@ function renderPlanControls() {
   $('#maxPkg').value = st.maxPkg; $('#minLevel').value = st.minLevel;
   $$('.chan').forEach(c => c.checked = st.channels.includes(c.value));
   $('#payMode').value = st.payMode || 'any';
+  $('#preferEU').checked = !!st.preferEU; $('#euPct').value = st.euPct ?? 50;
 }
 
 function orderText(r) {
@@ -198,7 +211,7 @@ function ordersHTML(r) {
   return r.orders.map(o => {
     const v = o.v, site = v.url ? `<a class="buy" href="${esc(v.url)}" target="_blank" rel="noopener">Web del proveedor ↗</a>` : '';
     return `<div class="vendor-order"><header><h3>${esc(v.name)}</h3><b>${eur(o.subtotal - o.coupon + o.ship)}</b></header>
-      <div><span class="tag">${esc(CHANNEL_LABEL[v.channel] || v.channel)}</span><span class="tag ${v.level === 'D' ? 'bad' : ''}">Nivel ${esc(v.level)}</span></div>
+      <div><span class="tag">${esc(CHANNEL_LABEL[v.channel] || v.channel)}</span><span class="tag ${v.level === 'D' ? 'bad' : ''}">Nivel ${esc(v.level)}</span>${v.euWarehouse ? '<span class="tag">Almacén UE (declarado)</span>' : ''}</div>
       <p class="pay"><b>Pago:</b> ${esc(v.payment || 'no publicado')}</p>
       ${v.notes ? `<p class="hint">${esc(v.notes)}</p>` : ''}
       ${site}
@@ -234,6 +247,7 @@ function renderResults(res) {
       <div class="kpi"><b>${eur(r.coupon)}</b><span>ahorro cupones</span></div>
     </div>
     <div>${warn.join('')}</div>`;
+  if (S.settings.preferEU) html += `<p class="hint"><b>Prioridad almacén UE (hasta +${S.settings.euPct ?? 50} % sobre la referencia):</b> ${res.euUsed.length ? 'se usa oferta UE en ' + res.euUsed.map(p => esc(p.name)).join(', ') : 'ningún péptido tiene oferta UE dentro del techo'}.${res.euNone.length ? ' Sin oferta UE dentro del techo (se usa la más barata): ' + res.euNone.map(p => esc(p.name)).join(', ') + '.' : ''} El almacén UE es el declarado por el vendedor, no confirmado.</p>`;
   html += ordersHTML(r) + `<div class="row" style="margin-top:.8rem"><button class="ghost copyPlan" data-i="0">Copiar pedido</button></div></div>`;
   if (res.best.length > 1) {
     html += `<div class="card"><h2>Alternativas</h2><p class="hint">Toca una alternativa para ver qué se compra a cada proveedor.</p>${res.best.slice(1).map((a, k) => {
@@ -346,6 +360,7 @@ function renderVendors() {
           <label>Canal<select class="vs" data-k="channel" data-id="${esc(v.id)}">${Object.entries(CHANNEL_LABEL).map(([k, l]) => `<option value="${k}" ${k === v.channel ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
           <label>Pago<input type="text" class="vs" data-k="payment" data-id="${esc(v.id)}" value="${esc(v.payment || '')}"></label>
         </div>
+        <label class="inline"><input type="checkbox" class="vEU" data-id="${esc(v.id)}" ${v.euWarehouse ? 'checked' : ''}> Almacén en la UE (declarado por el vendedor)</label>
         <label>Notas<input type="text" class="vs" data-k="notes" data-id="${esc(v.id)}" value="${esc(v.notes || '')}"></label>
         ${v.url ? `<p class="hint"><a href="${esc(v.url)}" target="_blank" rel="noopener">Abrir web del proveedor</a></p>` : ''}
       </div></details>`;
@@ -353,6 +368,7 @@ function renderVendors() {
   $$('.vActive').forEach(c => { c.addEventListener('click', e => e.stopPropagation()); c.addEventListener('change', () => { vendorById(c.dataset.id).active = c.checked; save(); }); });
   $$('.vf').forEach(i => i.addEventListener('change', () => { const v = vendorById(i.dataset.id); v[i.dataset.k] = i.value === '' ? (i.dataset.k === 'couponPct' ? 0 : null) : num(i.value); save(); renderVendors(); }));
   $$('.vs').forEach(i => i.addEventListener('change', () => { vendorById(i.dataset.id)[i.dataset.k] = i.value; save(); renderVendors(); }));
+  $$('.vEU').forEach(c => c.addEventListener('change', () => { vendorById(c.dataset.id).euWarehouse = c.checked; save(); }));
 }
 $('#addVendor')?.addEventListener('click', () => {
   const name = prompt('Nombre del proveedor'); if (!name) return;
@@ -399,7 +415,7 @@ function bindSettings() {
         prev.vendors.filter(v => !d.vendors.some(x => x.id === v.id)).forEach(v => d.vendors.push(v));
         d.settings = prev.settings;
       }
-      S = d; S.settings = Object.assign({ maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], payMode: 'any' }, S.settings || {});
+      S = d; S.settings = Object.assign({ maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], payMode: 'any', preferEU: false, euPct: 50 }, S.settings || {});
       save(); renderAll(); $('#results').innerHTML = ''; toast('Datos importados');
     } catch (err) { toast('Archivo no válido'); }
     e.target.value = '';
@@ -407,7 +423,7 @@ function bindSettings() {
   $('#btnReset').addEventListener('click', () => {
     if (!DEFAULTS) return toast('Esta instalación no incluye datos: importa de nuevo tu archivo .json');
     if (!confirm('Se perderán tus cambios. ¿Restaurar los datos de la tabla?')) return;
-    S = structuredClone(DEFAULTS); S.settings = { maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], payMode: 'any' };
+    S = structuredClone(DEFAULTS); S.settings = { maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], payMode: 'any', preferEU: false, euPct: 50 };
     save(); renderAll(); $('#results').innerHTML = ''; toast('Datos restaurados');
   });
 }

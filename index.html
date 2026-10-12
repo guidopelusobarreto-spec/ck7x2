@@ -72,6 +72,10 @@
           <option value="cardOnly">Solo tarjeta o PayPal confirmados (deja fuera casi todos los péptidos)</option>
         </select>
       </label>
+      <label class="inline"><input type="checkbox" id="preferEU"> Preferir almacén UE en péptidos (kits de 10 viales)</label>
+      <label>Techo para ofertas con almacén UE (% sobre el precio de referencia)
+        <input type="number" id="euPct" min="0" max="300" step="5" value="50">
+      </label>
       <button class="primary" id="btnCalc">Calcular el plan más barato</button>
       <p class="hint" id="calcInfo"></p>
     </div>
