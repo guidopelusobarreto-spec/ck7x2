@@ -65,7 +65,13 @@
         <label><input type="checkbox" class="chan" value="telegram" checked> Listas de Telegram/foro</label>
         <label><input type="checkbox" class="chan" value="directorio" checked> Directorios (ChemicalBook, PDF)</label>
       </fieldset>
-      <label class="inline"><input type="checkbox" id="onlyCard"> Solo proveedores con pago con tarjeta o PayPal confirmado</label>
+      <label>Forma de pago
+        <select id="payMode">
+          <option value="any">Cualquiera (incluye «por confirmar», transferencia y cripto)</option>
+          <option value="noTransfer">Excluir solo los que piden transferencia o cripto</option>
+          <option value="cardOnly">Solo tarjeta o PayPal confirmados (deja fuera casi todos los péptidos)</option>
+        </select>
+      </label>
       <button class="primary" id="btnCalc">Calcular el plan más barato</button>
       <p class="hint" id="calcInfo"></p>
     </div>

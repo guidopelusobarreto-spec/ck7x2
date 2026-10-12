@@ -19,7 +19,12 @@ const vendorById = id => S.vendors.find(v => v.id === id);
 const productById = id => S.products.find(p => p.id === id);
 function offerEUR(o) { const fx = S.fx[o.currency] || 1; return o.price * o.units / fx; }
 function vendorShipping(v) { return v.shipping != null ? { value: v.shipping, est: false } : { value: v.shippingEstimate ?? 0, est: true }; }
-function payOK(v) { return /tarjeta|paypal/i.test(v.payment || ''); }
+function payOK(v, mode) {
+  const p = (v.payment || '').toLowerCase();
+  if (mode === 'cardOnly') return /tarjeta|paypal/.test(p);
+  if (mode === 'noTransfer') return /tarjeta|paypal|por confirmar/.test(p);
+  return true;
+}
 
 /* ---------- carga ---------- */
 async function init() {
@@ -30,7 +35,7 @@ async function init() {
   S = load();
   if (!S && DEFAULTS) S = structuredClone(DEFAULTS);
   if (!S) S = { version: 1, dataDate: '', fx: { USD: 1.1206, INR: 108.3965, EUR: 1 }, products: [], vendors: [], offers: [], excluded: [] };
-  S.settings = Object.assign({ maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], onlyCard: false }, S.settings || {});
+  S.settings = Object.assign({ maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], payMode: 'any' }, S.settings || {});
   bindTabs(); bindPlan(); bindSettings();
   renderAll();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
@@ -59,7 +64,7 @@ function eligibleVendors() {
   return S.vendors.filter(v => v.active
     && st.channels.includes(v.channel)
     && (LEVELS[v.level] || 0) >= LEVELS[st.minLevel]
-    && (!st.onlyCard || payOK(v)));
+    && payOK(v, st.payMode));
 }
 
 function optimize() {
@@ -144,7 +149,9 @@ function optimize() {
   }
   const t0 = performance.now();
   rec(0, 0, 0);
-  return { best, evaluated, nodes, ms: Math.round(performance.now() - t0), total: prods.length, noOffer: prods.filter((p, i) => !perProd[i].length) };
+  const noOffer = prods.filter((p, i) => !perProd[i].length);
+  const byFilter = noOffer.filter(p => S.offers.some(o => o.active && o.productId === p.id && vendorById(o.vendorId)?.active));
+  return { best, evaluated, nodes, ms: Math.round(performance.now() - t0), total: prods.length, noOffer, byFilter };
 }
 
 function bindPlan() {
@@ -159,14 +166,14 @@ function readPlanControls() {
   st.maxPkg = Math.max(1, Math.min(10, parseInt($("#maxPkg").value) || 8));
   st.minLevel = $('#minLevel').value;
   st.channels = $$('.chan').filter(c => c.checked).map(c => c.value);
-  st.onlyCard = $('#onlyCard').checked;
+  st.payMode = $('#payMode').value;
   save();
 }
 function renderPlanControls() {
   const st = S.settings;
   $('#maxPkg').value = st.maxPkg; $('#minLevel').value = st.minLevel;
   $$('.chan').forEach(c => c.checked = st.channels.includes(c.value));
-  $('#onlyCard').checked = st.onlyCard;
+  $('#payMode').value = st.payMode || 'any';
 }
 
 function orderText(r) {
@@ -189,10 +196,15 @@ function renderResults(res) {
   const r = res.best[0];
   const warn = [];
   if (r.uncovered) warn.push(`<span class="tag bad">${r.uncovered} producto(s) sin cubrir con ${S.settings.maxPkg} paquetes</span>`);
-  if (res.noOffer.length) warn.push(`<span class="tag bad">Sin oferta disponible: ${res.noOffer.map(p => esc(p.name)).join(', ')}</span>`);
+  const notFilter = res.noOffer.filter(p => !res.byFilter.includes(p));
+  if (notFilter.length) warn.push(`<span class="tag bad">Sin ninguna oferta activa: ${notFilter.map(p => esc(p.name)).join(', ')}</span>`);
   if (r.estShip) warn.push(`<span class="tag warn">${r.estShip} envío(s) estimado(s)</span>`);
   if (r.orders.some(o => o.v.channel === 'b2b')) warn.push(`<span class="tag warn">Incluye precios de IndiaMART: pedir cotización</span>`);
-  let html = `<div class="card">
+  let html = '';
+  if (res.byFilter.length) html += `<div class="card warn"><h2>${res.byFilter.length} producto(s) fuera por los filtros</h2>
+    <p>Las condiciones elegidas (forma de pago, canales o nivel) excluyen a todos los proveedores de: <b>${res.byFilter.map(p => esc(p.name)).join(', ')}</b>.</p>
+    <button class="primary" id="clearFilters">Quitar filtros y recalcular</button></div>`;
+  html += `<div class="card">
     <h2>Plan más barato</h2>
     <div class="total">${eur(r.total)}</div>
     <div class="kpis">
@@ -214,6 +226,10 @@ function renderResults(res) {
     html += `<div class="card"><h2>Alternativas</h2>${res.best.slice(1).map(a => `<div class="alt"><span>${a.orders.map(o => esc(o.v.name.split(' (')[0])).join(' + ')}${a.uncovered ? ` <span class="tag bad">${a.uncovered} sin cubrir</span>` : ''}</span><b>${eur(a.total)} <small class="hint">(+${eur(a.total - r.total)})</small></b></div>`).join('')}</div>`;
   }
   box.innerHTML = html;
+  $('#clearFilters')?.addEventListener('click', () => {
+    Object.assign(S.settings, { payMode: 'any', minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'] });
+    save(); renderPlanControls(); renderResults(optimize()); toast('Filtros quitados');
+  });
   $('#copyPlan').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(orderText(r)); toast('Pedido copiado'); } catch (e) { toast('No se pudo copiar'); }
   });
@@ -357,7 +373,7 @@ function bindSettings() {
     try {
       const d = JSON.parse(await f.text());
       if (!Array.isArray(d.products) || !Array.isArray(d.vendors) || !Array.isArray(d.offers)) throw new Error('formato');
-      S = d; S.settings = Object.assign({ maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], onlyCard: false }, S.settings || {});
+      S = d; S.settings = Object.assign({ maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], payMode: 'any' }, S.settings || {});
       save(); renderAll(); $('#results').innerHTML = ''; toast('Datos importados');
     } catch (err) { toast('Archivo no válido'); }
     e.target.value = '';
@@ -365,7 +381,7 @@ function bindSettings() {
   $('#btnReset').addEventListener('click', () => {
     if (!DEFAULTS) return toast('Esta instalación no incluye datos: importa de nuevo tu archivo .json');
     if (!confirm('Se perderán tus cambios. ¿Restaurar los datos de la tabla?')) return;
-    S = structuredClone(DEFAULTS); S.settings = { maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], onlyCard: false };
+    S = structuredClone(DEFAULTS); S.settings = { maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], payMode: 'any' };
     save(); renderAll(); $('#results').innerHTML = ''; toast('Datos restaurados');
   });
 }
