@@ -2,7 +2,7 @@
 'use strict';
 const STORE_KEY = 'optcompras-v1';
 const LEVELS = { A: 4, B: 3, C: 2, D: 1 };
-const CHANNEL_LABEL = { online: 'Tienda online', b2b: 'IndiaMART / cotización', telegram: 'Telegram / foro', directorio: 'Directorio / PDF' };
+const CHANNEL_LABEL = { online: 'Tienda online', b2b: 'Cotización (IndiaMART, WhatsApp, email)', telegram: 'Telegram / foro', directorio: 'Directorio / PDF' };
 let S = null;          // estado completo (datos + ajustes)
 let DEFAULTS = null;   // datos de fábrica (data.json)
 
@@ -18,7 +18,13 @@ function load() { try { const r = localStorage.getItem(STORE_KEY); return r ? JS
 const vendorById = id => S.vendors.find(v => v.id === id);
 const productById = id => S.products.find(p => p.id === id);
 function offerEUR(o) { const fx = S.fx[o.currency] || 1; return o.price * o.units / fx; }
-function vendorShipping(v) { return v.shipping != null ? { value: v.shipping, est: false } : { value: v.shippingEstimate ?? 0, est: true }; }
+function vendorShipping(v, net) {
+  if (Array.isArray(v.shippingTiers) && v.shippingTiers.length) {
+    const t = [...v.shippingTiers].sort((a, b) => a.from - b.from).filter(t => net == null || net >= t.from).pop() || v.shippingTiers[0];
+    return { value: t.cost, est: false, tiers: true };
+  }
+  return v.shipping != null ? { value: v.shipping, est: false } : { value: v.shippingEstimate ?? 0, est: true };
+}
 function payOK(v, mode) {
   const p = (v.payment || '').toLowerCase();
   if (mode === 'cardOnly') return /tarjeta|paypal/.test(p);
@@ -91,7 +97,6 @@ function optimize() {
   }));
   const perProdLB = perProd.map(l => [...l].sort((a, b) => a.lb - b.lb));
   const maxK = Math.min(st.maxPkg, n);
-  const ship = vend.map(v => vendorShipping(v));
   const KEEP = 6, best = [];
   let evaluated = 0, nodes = 0;
   const sub = new Float64Array(vend.length);
@@ -115,10 +120,11 @@ function optimize() {
       if (sub[vi] === 0) return null;                       // proveedor sin uso: combinación no mínima
       const c = sub[vi] * (v.couponPct || 0) / 100, net = sub[vi] - c;
       if (v.minOrder && net < v.minOrder) return null;       // no alcanza el pedido mínimo
-      const s = (v.freeFrom && net >= v.freeFrom) ? 0 : ship[vi].value;
-      if (s && ship[vi].est) estShip++;
+      const sh = vendorShipping(v, net);
+      const s = (v.freeFrom && net >= v.freeFrom) ? 0 : sh.value;
+      if (s && sh.est) estShip++;
       total += net + s; shipT += s; coupon += c;
-      orders.push({ v, subtotal: sub[vi], coupon: c, ship: s, shipEst: ship[vi].est && s > 0, lines: picks.filter(x => x.vi === vi) });
+      orders.push({ v, subtotal: sub[vi], coupon: c, ship: s, shipEst: sh.est && s > 0, lines: picks.filter(x => x.vi === vi) });
     }
     return { total, shipT, coupon, uncovered, orders, estShip, score: total + uncovered * 1e6 };
   }
@@ -188,6 +194,20 @@ function orderText(r) {
   return out.join('\n');
 }
 
+function ordersHTML(r) {
+  return r.orders.map(o => {
+    const v = o.v, site = v.url ? `<a class="buy" href="${esc(v.url)}" target="_blank" rel="noopener">Web del proveedor ↗</a>` : '';
+    return `<div class="vendor-order"><header><h3>${esc(v.name)}</h3><b>${eur(o.subtotal - o.coupon + o.ship)}</b></header>
+      <div><span class="tag">${esc(CHANNEL_LABEL[v.channel] || v.channel)}</span><span class="tag ${v.level === 'D' ? 'bad' : ''}">Nivel ${esc(v.level)}</span></div>
+      <p class="pay"><b>Pago:</b> ${esc(v.payment || 'no publicado')}</p>
+      ${v.notes ? `<p class="hint">${esc(v.notes)}</p>` : ''}
+      ${site}
+      <table class="lines">${o.lines.map(l => `<tr><td>${esc(l.p.name)}<br><small class="hint">${esc(l.o.desc)}${(l.p.qty || 1) > 1 ? ' ×' + l.p.qty : ''}</small>${l.o.url ? `<br><a href="${esc(l.o.url)}" target="_blank" rel="noopener">Ver oferta ↗</a>` : ''}</td><td class="num">${eur(l.cost)}</td></tr>`).join('')}
+      ${o.coupon ? `<tr><td>Cupón ${v.couponPct}%</td><td class="num">−${eur(o.coupon)}</td></tr>` : ''}
+      <tr><td>Envío${o.shipEst ? ' (estimado)' : ''}</td><td class="num">${o.ship ? eur(o.ship) : 'gratis'}</td></tr></table></div>`;
+  }).join('');
+}
+
 function renderResults(res) {
   const box = $('#results');
   if (res.error) { box.innerHTML = `<div class="card"><p>${esc(res.error)}</p></div>`; return; }
@@ -199,7 +219,7 @@ function renderResults(res) {
   const notFilter = res.noOffer.filter(p => !res.byFilter.includes(p));
   if (notFilter.length) warn.push(`<span class="tag bad">Sin ninguna oferta activa: ${notFilter.map(p => esc(p.name)).join(', ')}</span>`);
   if (r.estShip) warn.push(`<span class="tag warn">${r.estShip} envío(s) estimado(s)</span>`);
-  if (r.orders.some(o => o.v.channel === 'b2b')) warn.push(`<span class="tag warn">Incluye precios de IndiaMART: pedir cotización</span>`);
+  if (r.orders.some(o => o.v.channel === 'b2b')) warn.push(`<span class="tag warn">Incluye proveedores que piden presupuesto: el precio final hay que confirmarlo</span>`);
   let html = '';
   if (res.byFilter.length) html += `<div class="card warn"><h2>${res.byFilter.length} producto(s) fuera por los filtros</h2>
     <p>Las condiciones elegidas (forma de pago, canales o nivel) excluyen a todos los proveedores de: <b>${res.byFilter.map(p => esc(p.name)).join(', ')}</b>.</p>
@@ -214,25 +234,22 @@ function renderResults(res) {
       <div class="kpi"><b>${eur(r.coupon)}</b><span>ahorro cupones</span></div>
     </div>
     <div>${warn.join('')}</div>`;
-  r.orders.forEach(o => {
-    html += `<div class="vendor-order"><header><h3>${esc(o.v.name)}</h3><b>${eur(o.subtotal - o.coupon + o.ship)}</b></header>
-      <div><span class="tag">${esc(CHANNEL_LABEL[o.v.channel] || o.v.channel)}</span><span class="tag">Pago: ${esc(o.v.payment || '—')}</span><span class="tag ${o.v.level === 'D' ? 'bad' : ''}">Nivel ${esc(o.v.level)}</span></div>
-      <table class="lines">${o.lines.map(l => `<tr><td>${esc(l.p.name)}<br><small class="hint">${esc(l.o.desc)}${(l.p.qty || 1) > 1 ? ' ×' + l.p.qty : ''}</small></td><td class="num">${eur(l.cost)}</td></tr>`).join('')}
-      ${o.coupon ? `<tr><td>Cupón ${o.v.couponPct}%</td><td class="num">−${eur(o.coupon)}</td></tr>` : ''}
-      <tr><td>Envío${o.shipEst ? ' (estimado)' : ''}</td><td class="num">${o.ship ? eur(o.ship) : 'gratis'}</td></tr></table></div>`;
-  });
-  html += `<div class="row wrap" style="margin-top:12px"><button class="ghost" id="copyPlan">Copiar pedido</button></div></div>`;
+  html += ordersHTML(r) + `<div class="row" style="margin-top:.8rem"><button class="ghost copyPlan" data-i="0">Copiar pedido</button></div></div>`;
   if (res.best.length > 1) {
-    html += `<div class="card"><h2>Alternativas</h2>${res.best.slice(1).map(a => `<div class="alt"><span>${a.orders.map(o => esc(o.v.name.split(' (')[0])).join(' + ')}${a.uncovered ? ` <span class="tag bad">${a.uncovered} sin cubrir</span>` : ''}</span><b>${eur(a.total)} <small class="hint">(+${eur(a.total - r.total)})</small></b></div>`).join('')}</div>`;
+    html += `<div class="card"><h2>Alternativas</h2><p class="hint">Toca una alternativa para ver qué se compra a cada proveedor.</p>${res.best.slice(1).map((a, k) => {
+      const diff = a.uncovered > r.uncovered ? `<span class="tag bad">cubre ${a.uncovered - r.uncovered} producto(s) menos</span>` : `<small class="hint">(${a.total >= r.total ? '+' : '−'}${eur(Math.abs(a.total - r.total))})</small>`;
+      return `<details class="altd"><summary><span class="name">${a.orders.map(o => esc(o.v.name.split(' (')[0])).join(' + ')}</span><span class="best">${eur(a.total)}</span><span class="diff">${diff}</span></summary>
+        <div class="body">${ordersHTML(a)}<div class="row" style="margin-top:.8rem"><button class="ghost copyPlan" data-i="${k + 1}">Copiar este pedido</button></div></div></details>`;
+    }).join('')}</div>`;
   }
   box.innerHTML = html;
   $('#clearFilters')?.addEventListener('click', () => {
     Object.assign(S.settings, { payMode: 'any', minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'] });
     save(); renderPlanControls(); renderResults(optimize()); toast('Filtros quitados');
   });
-  $('#copyPlan').addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText(orderText(r)); toast('Pedido copiado'); } catch (e) { toast('No se pudo copiar'); }
-  });
+  $$('.copyPlan').forEach(b => b.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(orderText(res.best[+b.dataset.i])); toast('Pedido copiado'); } catch (e) { toast('No se pudo copiar'); }
+  }));
 }
 
 /* ---------- productos ---------- */
@@ -373,6 +390,15 @@ function bindSettings() {
     try {
       const d = JSON.parse(await f.text());
       if (!Array.isArray(d.products) || !Array.isArray(d.vendors) || !Array.isArray(d.offers)) throw new Error('formato');
+      const prev = S;
+      const keep = prev && prev.products.length && confirm('¿Conservar tus selecciones (productos activos, cantidades y ofertas desactivadas)? Pulsa «Cancelar» para usar el archivo tal cual.');
+      if (keep) {
+        d.products.forEach(p => { const q = prev.products.find(x => x.id === p.id); if (q) { p.active = q.active; p.qty = q.qty; p.target = q.target; } });
+        d.offers.forEach(o => { const q = prev.offers.find(x => x.productId === o.productId && x.vendorId === o.vendorId && x.desc === o.desc); if (q) o.active = q.active; });
+        prev.offers.filter(o => String(o.id).startsWith('u') && !d.offers.some(x => x.id === o.id)).forEach(o => d.offers.push(o));
+        prev.vendors.filter(v => !d.vendors.some(x => x.id === v.id)).forEach(v => d.vendors.push(v));
+        d.settings = prev.settings;
+      }
       S = d; S.settings = Object.assign({ maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], payMode: 'any' }, S.settings || {});
       save(); renderAll(); $('#results').innerHTML = ''; toast('Datos importados');
     } catch (err) { toast('Archivo no válido'); }

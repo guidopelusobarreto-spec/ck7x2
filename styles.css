@@ -127,3 +127,13 @@ html[data-size="muy-grande"] .tabs,html[data-size="enorme"] .tabs{position:stati
 .install-help{flex:1 1 100%;margin:.3rem 0 0}
 .install-help ul{margin:.3rem 0 .6rem;padding-left:1.2rem}.install-help li{margin:.35rem 0}
 [hidden]{display:none!important}
+
+.pay{margin:.4rem 0;font-size:.95rem}
+a.buy{display:inline-flex;align-items:center;min-height:2.6rem;padding:.35rem .8rem;margin:.2rem 0 .3rem;border-radius:.7rem;background:var(--accent);color:var(--accent-ink);font-weight:800;text-decoration:none}
+.lines a{display:inline-block;margin-top:.2rem;font-size:.9rem;font-weight:700}
+details.altd{border-top:1px solid var(--line)}
+details.altd>summary{padding:.7rem 0}
+details.altd>summary::before{content:'▸';font-weight:800;margin-right:.2rem}
+details.altd[open]>summary::before{content:'▾'}
+details.altd .body{padding:0 0 .8rem}
+details.altd .diff{flex-basis:100%}
