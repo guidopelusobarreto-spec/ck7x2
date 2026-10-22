@@ -1,5 +1,5 @@
-const CACHE = 'optcompras-v6';
-const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
+const CACHE = 'optcompras-v7';
+const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'fonts/atkinson-400.woff2', 'fonts/atkinson-700.woff2'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
 });
@@ -9,10 +9,7 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return;
-  // data.json: red primero (para recibir datos nuevos), caché como respaldo
-  if (url.pathname.endsWith('data.json')) {
-    e.respondWith(fetch(e.request).then(r => { const cp = r.clone(); caches.open(CACHE).then(c => c.put(e.request, cp)); return r; }).catch(() => caches.match(e.request)));
-    return;
-  }
-  e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
+  // datos cifrados: siempre de la red (la app ya avisa si no hay conexión)
+  if (url.pathname.endsWith('datos.enc')) return;
+  e.respondWith(caches.match(e.request, { ignoreSearch: true }).then(r => r || fetch(e.request)));
 });

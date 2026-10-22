@@ -4,50 +4,35 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
-<meta name="theme-color" content="#14532d">
+<meta name="theme-color" content="#f5f4f0" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121413" media="(prefers-color-scheme: dark)">
 <title>Optimizador de compras</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preload" href="fonts/atkinson-400.woff2" as="font" type="font/woff2" crossorigin>
 <script>try{var u=JSON.parse(localStorage.getItem('optcompras-ui')||'{}');document.documentElement.dataset.size=u.size||'grande';document.documentElement.dataset.contrast=u.contrast||'normal';}catch(e){document.documentElement.dataset.size='grande';}</script>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <header class="top">
   <div class="brand">
-    <img src="icon.svg" alt="" width="28" height="28">
-    <div>
-      <h1>Optimizador de compras</h1>
-      <p class="sub" id="dataInfo">Cargando datos…</p>
-    </div>
+    <h1>Compras</h1>
+    <p class="sub" id="dataInfo">Cargando datos…</p>
   </div>
-  <button id="btnInstall" class="install" hidden>⬇ Instalar app</button>
-  <div id="installHelp" class="card install-help" hidden>
-    <h2>Cómo instalar</h2>
-    <ul>
-      <li><b>Chrome (Android):</b> menú <b>⋮</b> arriba a la derecha → <b>Instalar app</b> o <b>Añadir a pantalla de inicio</b>.</li>
-      <li><b>Samsung Internet:</b> menú <b>≡</b> → <b>Añadir página a</b> → <b>Pantalla de inicio</b>.</li>
-      <li><b>iPhone (Safari):</b> botón <b>Compartir</b> → <b>Añadir a pantalla de inicio</b>.</li>
-    </ul>
-    <button class="ghost" id="closeInstallHelp">Cerrar</button>
-  </div>
+  <button id="btnInstall" class="ghost slim" hidden>Instalar</button>
 </header>
-
-<nav class="tabs" role="tablist">
-  <button role="tab" data-tab="plan" aria-selected="true">Plan</button>
-  <button role="tab" data-tab="productos">Productos</button>
-  <button role="tab" data-tab="proveedores">Proveedores</button>
-  <button role="tab" data-tab="ajustes">Ajustes</button>
-</nav>
 
 <main>
   <!-- PLAN -->
   <section id="tab-plan" class="tab active">
-    <div class="card">
-      <h2>Condiciones</h2>
+    <div id="updateNote"></div>
+    <div id="results"></div>
+    <details class="card" id="condCard">
+      <summary><span>Condiciones del plan</span><small id="condSummary"></small></summary>
       <div class="grid2">
-        <label>Máximo de paquetes (proveedores)
-          <input type="number" id="maxPkg" min="1" max="10" value="8">
+        <label>Máximo de paquetes
+          <input type="number" id="maxPkg" min="1" max="10" value="8" inputmode="numeric">
         </label>
         <label>Nivel mínimo del proveedor
           <select id="minLevel">
@@ -59,37 +44,40 @@
         </label>
       </div>
       <fieldset class="chips">
-        <legend>Canales de compra permitidos</legend>
+        <legend>Canales permitidos</legend>
         <label><input type="checkbox" class="chan" value="online" checked> Tienda online</label>
         <label><input type="checkbox" class="chan" value="b2b" checked> IndiaMART / cotización</label>
-        <label><input type="checkbox" class="chan" value="telegram" checked> Listas de Telegram/foro</label>
-        <label><input type="checkbox" class="chan" value="directorio" checked> Directorios (ChemicalBook, PDF)</label>
+        <label><input type="checkbox" class="chan" value="telegram" checked> Telegram / foro</label>
+        <label><input type="checkbox" class="chan" value="directorio" checked> Directorios</label>
       </fieldset>
       <label>Forma de pago
         <select id="payMode">
           <option value="any">Cualquiera (incluye «por confirmar», transferencia y cripto)</option>
-          <option value="noTransfer">Excluir solo los que piden transferencia o cripto</option>
-          <option value="cardOnly">Solo tarjeta o PayPal confirmados (deja fuera casi todos los péptidos)</option>
+          <option value="noTransfer">Excluir los que piden transferencia o cripto</option>
+          <option value="cardOnly">Solo tarjeta o PayPal confirmados</option>
         </select>
       </label>
-      <label class="inline"><input type="checkbox" id="preferEU"> Preferir almacén UE en péptidos (kits de 10 viales)</label>
-      <label>Techo para ofertas con almacén UE (% sobre el precio de referencia)
-        <input type="number" id="euPct" min="0" max="300" step="5" value="50">
+      <label class="inline"><input type="checkbox" id="preferEU"> Preferir almacén UE en péptidos</label>
+      <label>Techo para ofertas con almacén UE (% sobre la referencia)
+        <input type="number" id="euPct" min="0" max="300" step="5" value="50" inputmode="numeric">
       </label>
-      <button class="primary" id="btnCalc">Calcular el plan más barato</button>
+      <div class="fixed-box">
+        <p class="label">Proveedores fijos <small class="hint">(se compra en ellos todo lo que vendan y se optimiza el resto)</small></p>
+        <div id="fixedChips" class="row wrap"></div>
+        <button class="ghost slim" id="btnFixed">Elegir proveedores fijos</button>
+      </div>
       <p class="hint" id="calcInfo"></p>
-    </div>
-    <div id="results"></div>
+    </details>
   </section>
 
   <!-- PRODUCTOS -->
   <section id="tab-productos" class="tab">
     <div class="card">
       <h2>Productos</h2>
-      <p class="hint">Activa los productos que quieres comprar, ajusta la cantidad (en lotes del objetivo) y elige qué ofertas se tienen en cuenta. Puedes editar precios y añadir ofertas nuevas.</p>
+      <p class="hint">Marca lo que quieres comprar y ajusta la cantidad. El plan se recalcula solo.</p>
       <div class="row">
-        <button id="allOn" class="ghost">Activar todos</button>
-        <button id="allOff" class="ghost">Desactivar todos</button>
+        <button id="allOn" class="ghost slim">Activar todos</button>
+        <button id="allOff" class="ghost slim">Desactivar todos</button>
       </div>
     </div>
     <div id="productList"></div>
@@ -99,8 +87,8 @@
   <section id="tab-proveedores" class="tab">
     <div class="card">
       <h2>Proveedores</h2>
-      <p class="hint">El envío vacío significa «desconocido»: se usa la estimación y el plan lo marca. Envío gratis y pedido mínimo se comparan con el subtotal tras el cupón.</p>
-      <button id="addVendor" class="ghost">+ Añadir proveedor</button>
+      <p class="hint">Envío vacío = desconocido: se usa la estimación y el plan lo marca. Envío gratis y pedido mínimo se comparan con el subtotal tras el cupón.</p>
+      <button id="addVendor" class="ghost slim">+ Añadir proveedor</button>
     </div>
     <div id="vendorList"></div>
   </section>
@@ -108,38 +96,48 @@
   <!-- AJUSTES -->
   <section id="tab-ajustes" class="tab">
     <div class="card">
+      <h2>Actualización semanal</h2>
+      <p class="hint">Cada semana se revisan los precios y se publican los datos <b>cifrados</b> junto a la app. Escribe la clave una vez: la app los descarga y los descifra sola al abrirla, conservando tus selecciones. Nadie sin la clave puede leerlos.</p>
+      <label>Clave de los datos
+        <input type="password" id="syncKey" autocomplete="off" autocapitalize="none" spellcheck="false">
+      </label>
+      <div class="row wrap">
+        <button class="primary slim" id="btnSyncSave">Guardar y comprobar ahora</button>
+        <button class="ghost slim" id="btnSyncForget">Olvidar la clave</button>
+      </div>
+      <p class="hint" id="syncInfo"></p>
+    </div>
+    <div class="card">
       <h2>Lectura</h2>
-      <p class="hint">Tamaño de letra de toda la app. El diseño se reorganiza para que nada se corte.</p>
       <div class="seg" id="sizeSeg" role="group" aria-label="Tamaño de letra">
         <button data-size="normal" aria-pressed="false">A</button>
         <button data-size="grande" aria-pressed="false" style="font-size:1.1em">A</button>
         <button data-size="muy-grande" aria-pressed="false" style="font-size:1.25em">A</button>
         <button data-size="enorme" aria-pressed="false" style="font-size:1.4em">A</button>
       </div>
-      <label class="inline"><input type="checkbox" id="contrastHigh"> Alto contraste (textos secundarios en negro)</label>
+      <label class="inline"><input type="checkbox" id="contrastHigh"> Alto contraste</label>
     </div>
     <div class="card">
       <h2>Tipos de cambio</h2>
-      <p class="hint">Unidades de cada divisa por 1 € (BCE). Se aplican a todas las ofertas.</p>
+      <p class="hint">Unidades de cada divisa por 1 € (BCE). La actualización semanal los renueva.</p>
       <div class="grid2">
-        <label>USD por € <input type="number" step="0.0001" id="fxUSD"></label>
-        <label>INR por € <input type="number" step="0.0001" id="fxINR"></label>
+        <label>USD por € <input type="number" step="0.0001" id="fxUSD" inputmode="decimal"></label>
+        <label>INR por € <input type="number" step="0.0001" id="fxINR" inputmode="decimal"></label>
       </div>
     </div>
     <div class="card">
       <h2>Datos</h2>
-      <p class="hint">Los cambios se guardan en este dispositivo. Exporta una copia para pasarla a otro dispositivo o guardarla.</p>
+      <p class="hint">Los cambios se guardan solo en este dispositivo.</p>
       <div class="row wrap">
-        <button id="btnExport" class="ghost">Exportar datos (.json)</button>
-        <label class="ghost filebtn">Importar datos (.json)<input type="file" id="fileImport" accept="application/json,.json" hidden></label>
-        <button id="btnReset" class="danger">Restaurar datos de la tabla</button>
+        <button id="btnExport" class="ghost slim">Exportar (.json)</button>
+        <label class="btn ghost slim filebtn">Importar (.json)<input type="file" id="fileImport" accept="application/json,.json" hidden></label>
       </div>
       <p class="hint" id="excludedInfo"></p>
     </div>
     <div class="card warn">
       <h2>Avisos</h2>
       <ul>
-        <li>Ningún proveedor está verificado (nivel C). Los precios de IndiaMART son domésticos y orientativos: hay que pedir cotización con envío.</li>
+        <li>Ningún proveedor tiene verificación A. Los precios de IndiaMART son domésticos y orientativos: hay que pedir cotización con envío.</li>
         <li>Los envíos «estimados» son supuestos editables, no datos del vendedor.</li>
         <li>Las tabletas son medicamentos con receta en la UE; un envío a un particular puede ser retenido en aduana. Los péptidos y SARM son productos de investigación, no medicamentos autorizados.</li>
       </ul>
@@ -147,6 +145,14 @@
   </section>
 </main>
 
+<nav class="tabbar" role="tablist" aria-label="Secciones">
+  <button role="tab" data-tab="plan" aria-selected="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="18.5" cy="17" r="1.6"/></svg><span>Plan</span></button>
+  <button role="tab" data-tab="productos" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg><span>Productos</span></button>
+  <button role="tab" data-tab="proveedores" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9l1.5-4h15L21 9M3 9h18v10H3z"/><path d="M9 19v-5h6v5"/></svg><span>Proveedores</span></button>
+  <button role="tab" data-tab="ajustes" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg><span>Ajustes</span></button>
+</nav>
+
+<dialog id="sheet"></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="app.js"></script>
 </body>
