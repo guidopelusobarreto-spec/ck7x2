@@ -2,7 +2,7 @@
 'use strict';
 const STORE_KEY = 'optcompras-v1', SYNC_KEY = 'optcompras-sync';
 const LEVELS = { A: 4, B: 3, C: 2, D: 1 };
-const CHANNEL_LABEL = { online: 'Tienda online', b2b: 'Cotización (IndiaMART, WhatsApp, email)', telegram: 'Telegram / foro', directorio: 'Directorio / PDF' };
+const CHANNEL_LABEL = { online: 'Tienda online', b2b: 'Cotización (WhatsApp, email)', telegram: 'Telegram / foro', directorio: 'Directorio / PDF' };
 const DEFAULT_SETTINGS = { maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], payMode: 'any', preferEU: false, euPct: 50, fixed: [] };
 let S = null;          // estado completo (datos + ajustes)
 let LAST = null;       // último resultado del optimizador
@@ -460,7 +460,7 @@ function renderVendors() {
 }
 $('#addVendor')?.addEventListener('click', () => {
   const name = prompt('Nombre del proveedor'); if (!name) return;
-  S.vendors.push({ id: 'v' + Date.now(), name, country: '', channel: 'online', payment: 'Por confirmar', shipping: null, shippingEstimate: 30, freeFrom: null, minOrder: null, couponPct: 0, level: 'C', notes: 'Añadido por el usuario', url: '', active: true });
+  S.vendors.push({ id: 'v' + Date.now(), name, country: '', channel: 'online', payment: 'Por confirmar', shipping: null, shippingEstimate: 30, freeFrom: null, minOrder: null, couponPct: 0, level: 'C', notes: 'Añadido por el usuario', url: '', active: true, user: true });
   save(); renderVendors(); toast('Proveedor añadido');
 });
 
@@ -472,7 +472,10 @@ function mergeKeep(prev, d) {
     d.products.forEach(p => { const q = prev.products.find(x => x.id === p.id); if (q) { p.active = q.active; p.qty = q.qty; p.target = q.target; } });
     d.offers.forEach(o => { const q = prev.offers.find(x => x.productId === o.productId && x.vendorId === o.vendorId && x.desc === o.desc); if (q) o.active = q.active; });
     prev.offers.filter(o => String(o.id).startsWith('u') && !d.offers.some(x => x.id === o.id)).forEach(o => d.offers.push(o));
-    prev.vendors.filter(v => !d.vendors.some(x => x.id === v.id)).forEach(v => d.vendors.push(v));
+    // solo se conservan los proveedores añadidos por el usuario; los retirados de los datos no vuelven
+    const mine = v => v.user || /^v\d{12,}$/.test(v.id);
+    prev.vendors.filter(v => mine(v) && !d.vendors.some(x => x.id === v.id)).forEach(v => d.vendors.push(v));
+    if (d.settings === undefined && prev.settings?.fixed) prev.settings.fixed = prev.settings.fixed.filter(id => d.vendors.some(v => v.id === id));
     d.vendors.forEach(v => { const q = prev.vendors.find(x => x.id === v.id); if (q) for (const k of ['whatsapp', 'email']) if (q[k] && !v[k]) v[k] = q[k]; });
   }
   d.settings = Object.assign({}, DEFAULT_SETTINGS, prev?.settings || {});
