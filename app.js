@@ -393,7 +393,7 @@ function offerRow(o, p) {
 }
 function bindProductEvents() {
   $$('.pActive').forEach(c => { c.addEventListener('click', e => e.stopPropagation()); c.addEventListener('change', () => { productById(+c.dataset.id).active = c.checked; save(); }); });
-  $$('.pTarget').forEach(i => i.addEventListener('change', () => { productById(+i.dataset.id).target = i.value; save(); renderProducts(); }));
+  $$('.pTarget').forEach(i => i.addEventListener('change', () => { const p = productById(+i.dataset.id); p.target = i.value; p.targetUser = true; save(); renderProducts(); }));
   $$('.pQty').forEach(i => i.addEventListener('change', () => { productById(+i.dataset.id).qty = Math.max(1, parseInt(i.value) || 1); save(); renderProducts(); }));
   $$('.oActive').forEach(c => c.addEventListener('change', () => { S.offers.find(o => o.id === c.dataset.oid).active = c.checked; save(); renderProducts(); }));
   $$('.oEdit').forEach(b => b.addEventListener('click', () => b.closest('.offer').classList.toggle('editing')));
@@ -469,7 +469,7 @@ function validData(d) { return d && Array.isArray(d.products) && Array.isArray(d
 // Datos nuevos + tus selecciones: productos activos y cantidades, ofertas desactivadas, tus ofertas y proveedores añadidos, condiciones.
 function mergeKeep(prev, d) {
   if (prev && prev.products.length) {
-    d.products.forEach(p => { const q = prev.products.find(x => x.id === p.id); if (q) { p.active = q.active; p.qty = q.qty; p.target = q.target; } });
+    d.products.forEach(p => { const q = prev.products.find(x => x.id === p.id); if (q) { p.active = q.active; p.qty = q.qty; if (q.targetUser) { p.target = q.target; p.targetUser = true; } } });
     d.offers.forEach(o => { const q = prev.offers.find(x => x.productId === o.productId && x.vendorId === o.vendorId && x.desc === o.desc); if (q) o.active = q.active; });
     prev.offers.filter(o => String(o.id).startsWith('u') && !d.offers.some(x => x.id === o.id)).forEach(o => d.offers.push(o));
     // solo se conservan los proveedores añadidos por el usuario; los retirados de los datos no vuelven
