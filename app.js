@@ -3,7 +3,10 @@
 const STORE_KEY = 'optcompras-v1', SYNC_KEY = 'optcompras-sync';
 const LEVELS = { A: 4, B: 3, C: 2, D: 1 };
 const CHANNEL_LABEL = { online: 'Tienda online', b2b: 'Cotización (WhatsApp, email)', telegram: 'Telegram / foro', directorio: 'Directorio / PDF' };
-const DEFAULT_SETTINGS = { maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], payMode: 'any', preferEU: false, euPct: 50, fixed: [] };
+const DEFAULT_SETTINGS = { maxPkg: 8, minLevel: 'C', channels: ['online', 'b2b', 'telegram', 'directorio'], payMode: 'any', preferEU: false, euPct: 50, fixed: [], customsLimit: 150, customsMode: 'warn' };
+const LEGAL_LIMIT = 150; // valor de la mercancía por envío de fuera de la UE (régimen simplificado, IOSS, 3 € por posición)
+const SHIP_MODE = { correo: 'Correo postal', mensajeria: 'Mensajería (DHL, FedEx…)', '': 'Sin confirmar' };
+const isPost = v => !v.euWarehouse && v.shipMode === 'correo';   // el límite de aduana se vigila solo en envíos postales
 let S = null;          // estado completo (datos + ajustes)
 let LAST = null;       // último resultado del optimizador
 
@@ -82,11 +85,19 @@ function optimize() {
   const st = S.settings;
   const prods = S.products.filter(p => p.active);
   const vend = eligibleVendors();
+  const lim = st.customsLimit ?? LEGAL_LIMIT, capOn = st.customsMode === 'cap';
   const vIndex = new Map(vend.map((v, i) => [v.id, i]));
   let perProd0 = prods.map(p => S.offers
     .filter(o => o.active && o.productId === p.id && vIndex.has(o.vendorId))
     .map(o => ({ o, vi: vIndex.get(o.vendorId), cost: offerEUR(o) * (p.qty || 1) }))
     .sort((a, b) => a.cost - b.cost));
+  // tope de aduana: fuera de la UE, una oferta que por sí sola supera el límite no se puede usar
+  const overCap = [];
+  if (capOn) perProd0 = perProd0.map((l, i) => {
+    const ok = l.filter(x => !isPost(vend[x.vi]) || x.cost * (1 - (vend[x.vi].couponPct || 0) / 100) <= lim + 1e-9);
+    if (l.length && !ok.length) overCap.push(prods[i]);
+    return ok;
+  });
   // proveedores fijos: lo que vendan se compra en ellos (el más barato entre los fijos)
   const fixedIds = (st.fixed || []).filter(id => vendorById(id));
   const fixedOff = fixedIds.filter(id => !vIndex.has(id));                 // fuera por los filtros
@@ -128,29 +139,60 @@ function optimize() {
   function evalMask(mask) {
     evaluated++;
     sub.fill(0);
-    const picks = [];
+    let picks = [];
     let uncovered = 0;
+    const unc = [];
     for (let pi = 0; pi < perProdLB.length; pi++) {
       const l = perProdLB[pi]; let pick = null;
       for (let j = 0; j < l.length; j++) if (mask & l[j].bit) { pick = l[j]; break; }
-      if (!pick) { if (l.length) uncovered++; continue; }
-      sub[pick.vi] += pick.cost; picks.push({ p: prods[pi], ...pick });
+      if (!pick) { if (l.length) { uncovered++; unc.push(prods[pi]); } continue; }
+      sub[pick.vi] += pick.cost; picks.push({ pi, p: prods[pi], ...pick });
+    }
+    if (capOn) {
+      // tope de aduana: mover líneas del paquete que se pasa al siguiente proveedor más barato de la combinación;
+      // si no cabe en ninguno, el producto queda sin cubrir
+      const netOf = vi => sub[vi] * (1 - (vend[vi].couponPct || 0) / 100);
+      const over = () => { for (let k = 0; k < n; k++) { const vi = cand[k]; if ((mask & (2 ** k)) && isPost(vend[vi]) && netOf(vi) > lim + 1e-9) return vi; } return -1; };
+      for (let guard = 0, vi; guard < 200 && (vi = over()) >= 0; guard++) {
+        let bestMove = null;
+        picks.forEach((x, xi) => {
+          if (x.vi !== vi) return;
+          perProdLB[x.pi].forEach(y => {
+            if (y.vi === vi || !(mask & y.bit)) return;
+            const vy = vend[y.vi];
+            if (isPost(vy) && (sub[y.vi] + y.cost) * (1 - (vy.couponPct || 0) / 100) > lim + 1e-9) return;
+            const d = y.lb - x.lb;
+            if (!bestMove || d < bestMove.d) bestMove = { xi, y, d };
+          });
+        });
+        if (bestMove) {
+          const x = picks[bestMove.xi];
+          sub[x.vi] -= x.cost; sub[bestMove.y.vi] += bestMove.y.cost;
+          picks[bestMove.xi] = { pi: x.pi, p: x.p, ...bestMove.y };
+        } else {
+          // ningún sitio: se quita la línea más cara de ese paquete
+          let xi = -1; picks.forEach((x, i) => { if (x.vi === vi && (xi < 0 || x.cost > picks[xi].cost)) xi = i; });
+          const x = picks[xi]; sub[vi] -= x.cost; picks.splice(xi, 1); uncovered++; unc.push(x.p);
+        }
+      }
     }
     let total = 0, shipT = 0, coupon = 0, estShip = 0;
     const orders = [];
     for (let k = 0; k < n; k++) {
       if (!(mask & (2 ** k))) continue;
       const vi = cand[k], v = vend[vi];
-      if (sub[vi] === 0) return null;                       // proveedor sin uso: combinación no mínima
+      if (sub[vi] <= 1e-9) return null;                     // proveedor sin uso: combinación no mínima
       const c = sub[vi] * (v.couponPct || 0) / 100, net = sub[vi] - c;
       if (v.minOrder && net < v.minOrder) return null;       // no alcanza el pedido mínimo
+      const outEU = !v.euWarehouse;
+      if (capOn && isPost(v) && net > lim + 1e-9) return null;   // supera el tope de aduana (envío postal)
       const sh = vendorShipping(v, net);
       const s = (v.freeFrom && net >= v.freeFrom) ? 0 : sh.value;
       if (s && sh.est) estShip++;
       total += net + s; shipT += s; coupon += c;
-      orders.push({ v, fixed: k < nF, subtotal: sub[vi], coupon: c, ship: s, shipEst: sh.est && s > 0, lines: picks.filter(x => x.vi === vi) });
+      orders.push({ v, fixed: k < nF, subtotal: sub[vi], coupon: c, ship: s, shipEst: sh.est && s > 0, lines: picks.filter(x => x.vi === vi), outEU, net });
     }
-    return { total, shipT, coupon, uncovered, orders, estShip, score: total + uncovered * 1e6 };
+    return { total, shipT, coupon, uncovered, unc, orders, estShip, score: total + uncovered * 1e6 };
   }
   function push(r) {
     if (!r) return;
@@ -179,9 +221,9 @@ function optimize() {
   }
   const t0 = performance.now();
   rec(nF, 2 ** nF - 1, nF);
-  const noOffer = prods.filter((p, i) => !perProd[i].length);
+  const noOffer = prods.filter((p, i) => !perProd[i].length && !overCap.includes(p));
   const byFilter = noOffer.filter(p => S.offers.some(o => o.active && o.productId === p.id && vendorById(o.vendorId)?.active));
-  return { best, evaluated, nodes, ms: Math.round(performance.now() - t0), total: prods.length, noOffer, byFilter, euUsed, euNone,
+  return { best, evaluated, nodes, ms: Math.round(performance.now() - t0), total: prods.length, noOffer, byFilter, euUsed, euNone, overCap, lim, capOn,
     fixedOff: fixedOff.map(vendorById), fixedUnused };
 }
 
@@ -194,7 +236,7 @@ function recalc() {
 
 function bindPlan() {
   const onChange = () => { readPlanControls(); recalc(); };
-  ['#maxPkg', '#minLevel', '#payMode', '#preferEU', '#euPct'].forEach(s => $(s).addEventListener('change', onChange));
+  ['#maxPkg', '#minLevel', '#payMode', '#preferEU', '#euPct', '#customsLimit', '#customsMode'].forEach(s => $(s).addEventListener('change', onChange));
   $$('.chan').forEach(c => c.addEventListener('change', onChange));
   $('#btnFixed').addEventListener('click', fixedSheet);
 }
@@ -206,6 +248,8 @@ function readPlanControls() {
   st.payMode = $('#payMode').value;
   st.preferEU = $('#preferEU').checked;
   st.euPct = Math.max(0, Math.min(300, num($('#euPct').value) ?? 50));
+  st.customsLimit = Math.max(0, Math.min(5000, num($('#customsLimit').value) ?? LEGAL_LIMIT));
+  st.customsMode = $('#customsMode').value === 'cap' ? 'cap' : 'warn';
   save(); renderCondSummary();
 }
 function renderPlanControls() {
@@ -214,6 +258,7 @@ function renderPlanControls() {
   $$('.chan').forEach(c => c.checked = st.channels.includes(c.value));
   $('#payMode').value = st.payMode || 'any';
   $('#preferEU').checked = !!st.preferEU; $('#euPct').value = st.euPct ?? 50;
+  $('#customsLimit').value = st.customsLimit ?? LEGAL_LIMIT; $('#customsMode').value = st.customsMode || 'warn';
   $('#fixedChips').innerHTML = (st.fixed || []).map(id => vendorById(id)).filter(Boolean)
     .map(v => `<span class="chip">${esc(v.name)} <button class="x" data-unfix="${esc(v.id)}" aria-label="Quitar ${esc(v.name)}">✕</button></span>`).join('') || '<span class="hint">Ninguno</span>';
   $$('[data-unfix]').forEach(b => b.addEventListener('click', () => { st.fixed = st.fixed.filter(x => x !== b.dataset.unfix); save(); renderPlanControls(); recalc(); }));
@@ -222,7 +267,7 @@ function renderPlanControls() {
 function renderCondSummary() {
   const st = S.settings;
   const pay = { any: 'cualquier pago', noTransfer: 'sin transferencia ni cripto', cardOnly: 'solo tarjeta o PayPal' }[st.payMode];
-  $('#condSummary').textContent = `${st.maxPkg} paquetes · nivel ${st.minLevel}${st.minLevel === 'A' ? '' : '+'} · ${pay}${st.preferEU ? ' · UE preferida' : ''}${st.fixed?.length ? ` · ${st.fixed.length} fijo(s)` : ''}`;
+  $('#condSummary').textContent = `${st.maxPkg} paquetes · nivel ${st.minLevel}${st.minLevel === 'A' ? '' : '+'} · ${pay}${st.preferEU ? ' · UE preferida' : ''}${st.fixed?.length ? ` · ${st.fixed.length} fijo(s)` : ''}${st.customsMode === 'cap' ? ` · máx. ${st.customsLimit ?? LEGAL_LIMIT} € por paquete postal` : ''}`;
 }
 function fixedSheet() {
   const act = new Set(S.products.filter(p => p.active).map(p => p.id));
@@ -283,17 +328,37 @@ function orderText(r) {
     out.push(`== ${o.v.name} ==`);
     o.lines.forEach(l => out.push(`- ${l.p.name}: ${l.o.desc}${(l.p.qty || 1) > 1 ? ' ×' + l.p.qty : ''} — ${eur(l.cost)}`));
     out.push(`Subtotal ${eur(o.subtotal)}${o.coupon ? ' · cupón −' + eur(o.coupon) : ''} · envío ${o.ship ? eur(o.ship) + (o.shipEst ? ' (estimado)' : '') : 'gratis'}`);
+    const cu = customsInfo(o); if (cu) out.push(cu.text);
     out.push('');
   });
   out.push(`TOTAL ${eur(r.total)}`);
   return out.join('\n');
 }
 
+function customsInfo(o) {
+  if (!o.outEU) return null;
+  const mode = o.v.shipMode || '';
+  if (mode !== 'correo') {
+    const tag = `<span class="tag">Fuera de la UE · ${mode === 'mensajeria' ? 'mensajería' : 'envío sin confirmar'}</span>`;
+    const text = mode === 'mensajeria'
+      ? `Aduana: la tramita el transportista, que cobra el IVA del 20 %, los aranceles y su comisión antes de entregar. El límite de ${eur(LEGAL_LIMIT)} también cuenta (mercancía: ${eur(o.net)}).`
+      : `Método de envío sin confirmar (mercancía: ${eur(o.net)}). Si va por correo postal, márcalo en Proveedores para vigilar el límite de ${eur(LEGAL_LIMIT)}.`;
+    return { over: false, tag, text };
+  }
+  const lim = S.settings.customsLimit ?? LEGAL_LIMIT, over = o.net > lim + 1e-9, overLegal = o.net > LEGAL_LIMIT + 1e-9;
+  const tag = over ? `<span class="tag bad">Correo · supera ${eur(lim)}</span>` : `<span class="tag">Correo · hasta ${eur(lim)}</span>`;
+  const text = overLegal
+    ? `Aduana: la mercancía vale ${eur(o.net)}, más de ${eur(LEGAL_LIMIT)}. Va con declaración de aduana completa (factura y documentos), IVA del 20 % y aranceles normales; más probable que lo abran o lo retengan.`
+    : `Aduana: hasta ${eur(LEGAL_LIMIT)} también se paga el IVA del 20 % y, desde el 1-jul-2026, 3 € de arancel por cada tipo de producto (los cobra la tienda o el correo al entregar). La aduana puede abrir cualquier paquete.${over ? ` Supera tu límite de ${eur(lim)}.` : ''}`;
+  return { over, tag, text };
+}
+
 function ordersHTML(r, ri) {
   return r.orders.map((o, oi) => {
-    const v = o.v;
+    const v = o.v, cu = customsInfo(o);
     return `<div class="vendor-order"><header><h3>${esc(v.name)}</h3><b>${eur(o.subtotal - o.coupon + o.ship)}</b></header>
-      <div class="tags">${o.fixed ? '<span class="tag fix">Fijo</span>' : ''}<span class="tag">${esc(CHANNEL_LABEL[v.channel] || v.channel)}</span><span class="tag ${v.level === 'D' ? 'bad' : ''}">Nivel ${esc(v.level)}</span>${v.euWarehouse ? '<span class="tag">Almacén UE (declarado)</span>' : ''}${v.tests ? '<span class="tag ok">Con análisis independientes</span>' : ''}</div>
+      <div class="tags">${o.fixed ? '<span class="tag fix">Fijo</span>' : ''}<span class="tag">${esc(CHANNEL_LABEL[v.channel] || v.channel)}</span><span class="tag ${v.level === 'D' ? 'bad' : ''}">Nivel ${esc(v.level)}</span>${v.euWarehouse ? '<span class="tag">Almacén UE (declarado)</span>' : ''}${v.tests ? '<span class="tag ok">Con análisis independientes</span>' : ''}${cu ? cu.tag : ''}</div>
+      ${cu ? `<p class="hint customs">${esc(cu.text)}</p>` : ''}
       <p class="pay"><b>Pago:</b> ${esc(v.payment || 'no publicado')}</p>
       ${v.notes ? `<p class="hint">${esc(v.notes)}</p>` : ''}${v.tests ? `<p class="hint"><b>Análisis:</b> ${esc(v.tests)}</p>` : ''}
       <table class="lines">${o.lines.map(l => `<tr><td>${esc(l.p.name)}<br><small class="hint">${esc(l.o.desc)}${(l.p.qty || 1) > 1 ? ' ×' + l.p.qty : ''}</small>${l.o.url ? `<br><a href="${esc(l.o.url)}" target="_blank" rel="noopener">Ver oferta ↗</a>` : ''}</td><td class="num">${eur(l.cost)}</td></tr>`).join('')}
@@ -306,14 +371,17 @@ function ordersHTML(r, ri) {
 function renderResults(res) {
   const box = $('#results');
   if (res.error) { box.innerHTML = `<div class="card warn"><p>${esc(res.error)}</p></div>`; return; }
-  $('#calcInfo').textContent = `${res.evaluated.toLocaleString('es-ES')} combinaciones evaluadas en ${res.ms} ms. Óptimo exacto en precio de productos; el envío gratis y los pedidos mínimos se aplican sobre la asignación más barata.`;
-  if (!res.best.length) { box.innerHTML = `<div class="card empty">No hay ninguna combinación válida con estas condiciones. Abre «Condiciones del plan» y permite más paquetes o más canales.</div>`; return; }
+  $('#calcInfo').textContent = `${res.evaluated.toLocaleString('es-ES')} combinaciones evaluadas en ${res.ms} ms. Óptimo exacto en precio de productos; el envío gratis y los pedidos mínimos se aplican sobre la asignación más barata.${res.capOn ? ' Con el tope de aduana activado, el plan es aproximado: si un paquete postal de fuera de la UE pasa del límite, sus productos se mueven al siguiente proveedor más barato y, si no caben, quedan sin cubrir.' : ''}`;
+  if (!res.best.length) { box.innerHTML = `<div class="card empty">No hay ninguna combinación válida con estas condiciones. Abre «Condiciones del plan» y permite más paquetes o más canales${S.settings.customsMode === 'cap' ? ', o cambia el límite de aduana a «Solo avisar»' : ''}.</div>`; return; }
   const r = res.best[0];
   const warn = [];
-  if (r.uncovered) warn.push(`<span class="tag bad">${r.uncovered} producto(s) sin cubrir con ${S.settings.maxPkg} paquetes</span>`);
+  if (r.uncovered) warn.push(`<span class="tag bad">${r.uncovered} producto(s) sin cubrir con ${S.settings.maxPkg} paquetes${res.capOn ? ' y el límite de aduana' : ''}: ${r.unc.map(p => esc(p.name)).join(', ')}</span>`);
   const notFilter = res.noOffer.filter(p => !res.byFilter.includes(p));
   if (notFilter.length) warn.push(`<span class="tag bad">Sin ninguna oferta activa: ${notFilter.map(p => esc(p.name)).join(', ')}</span>`);
   if (r.estShip) warn.push(`<span class="tag warn">${r.estShip} envío(s) estimado(s)</span>`);
+  const overN = r.orders.filter(o => customsInfo(o)?.over).length;
+  if (overN) warn.push(`<span class="tag bad">${overN} paquete(s) postal(es) de fuera de la UE superan ${eur(res.lim)}</span>`);
+  if (res.overCap.length) warn.push(`<span class="tag bad">Superan ${eur(res.lim)} por sí solos (no se compran por correo de fuera de la UE): ${res.overCap.map(p => esc(p.name)).join(', ')}</span>`);
   if (r.orders.some(o => o.v.channel === 'b2b')) warn.push(`<span class="tag warn">Incluye proveedores que piden presupuesto: el precio final hay que confirmarlo</span>`);
   if (res.fixedOff.length) warn.push(`<span class="tag warn">Fijos excluidos por las condiciones: ${res.fixedOff.map(v => esc(v.name)).join(', ')}</span>`);
   if (res.fixedUnused.length) warn.push(`<span class="tag warn">Fijos sin productos activos: ${res.fixedUnused.map(v => esc(v.name)).join(', ')}</span>`);
@@ -430,7 +498,7 @@ function renderVendors() {
     const sh = vendorShipping(v);
     return `<details class="vend" data-id="${esc(v.id)}" ${open.has(v.id) ? 'open' : ''}>
       <summary><input type="checkbox" class="vActive" data-id="${esc(v.id)}" ${v.active ? 'checked' : ''} aria-label="Activar ${esc(v.name)}">
-        <span class="name">${esc(v.name)}<small>${esc(CHANNEL_LABEL[v.channel] || v.channel)} · nivel ${esc(v.level)} · ${n} oferta(s)${v.tests ? ' · con análisis' : ''}</small></span>
+        <span class="name">${esc(v.name)}<small>${esc(CHANNEL_LABEL[v.channel] || v.channel)} · nivel ${esc(v.level)} · ${n} oferta(s)${v.tests ? ' · con análisis' : ''}${v.euWarehouse ? '' : ' · ' + esc(SHIP_MODE[v.shipMode || ''].split(' (')[0].toLowerCase())}</small></span>
         <span class="best">${sh.value ? eur(sh.value) + (sh.est ? '*' : '') : 'envío 0'}</span></summary>
       <div class="body">
         <div class="grid3">
@@ -448,6 +516,7 @@ function renderVendors() {
           <label>Correo<input type="email" class="vs" data-k="email" data-id="${esc(v.id)}" value="${esc(v.email || '')}"></label>
         </div>
         <label class="inline"><input type="checkbox" class="vEU" data-id="${esc(v.id)}" ${v.euWarehouse ? 'checked' : ''}> Almacén en la UE (declarado por el vendedor)</label>
+        <label>Envío desde fuera de la UE por<select class="vs" data-k="shipMode" data-id="${esc(v.id)}">${Object.entries(SHIP_MODE).map(([k, l]) => `<option value="${k}" ${k === (v.shipMode || '') ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         <label>Análisis independientes (p. ej. «Finnrick: retatrutida 3/3, 2026»)<input type="text" class="vs" data-k="tests" data-id="${esc(v.id)}" value="${esc(v.tests || '')}"></label>
         <label>Notas<input type="text" class="vs" data-k="notes" data-id="${esc(v.id)}" value="${esc(v.notes || '')}"></label>
         ${v.url ? `<p class="hint"><a href="${esc(v.url)}" target="_blank" rel="noopener">Abrir web del proveedor</a></p>` : ''}
@@ -476,7 +545,7 @@ function mergeKeep(prev, d) {
     const mine = v => v.user || /^v\d{12,}$/.test(v.id);
     prev.vendors.filter(v => mine(v) && !d.vendors.some(x => x.id === v.id)).forEach(v => d.vendors.push(v));
     if (d.settings === undefined && prev.settings?.fixed) prev.settings.fixed = prev.settings.fixed.filter(id => d.vendors.some(v => v.id === id));
-    d.vendors.forEach(v => { const q = prev.vendors.find(x => x.id === v.id); if (q) for (const k of ['whatsapp', 'email']) if (q[k] && !v[k]) v[k] = q[k]; });
+    d.vendors.forEach(v => { const q = prev.vendors.find(x => x.id === v.id); if (q) for (const k of ['whatsapp', 'email', 'shipMode']) if (q[k] && !v[k]) v[k] = q[k]; });
   }
   d.settings = Object.assign({}, DEFAULT_SETTINGS, prev?.settings || {});
   return d;

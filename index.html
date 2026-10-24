@@ -61,6 +61,18 @@
       <label>Techo para ofertas con almacén UE (% sobre la referencia)
         <input type="number" id="euPct" min="0" max="300" step="5" value="50" inputmode="numeric">
       </label>
+      <div class="grid2">
+        <label>Límite por paquete postal de fuera de la UE (€ de mercancía)
+          <input type="number" id="customsLimit" min="0" max="5000" step="5" value="150" inputmode="numeric">
+        </label>
+        <label>Si un paquete lo supera
+          <select id="customsMode">
+            <option value="warn">Solo avisar</option>
+            <option value="cap">No pasar del límite</option>
+          </select>
+        </label>
+      </div>
+      <p class="hint">Se vigila solo en proveedores que envían por correo postal (se marca en Proveedores). 150 € es el límite legal del envío simplificado, por correo o por mensajería; por debajo se paga igual el IVA del 20 % y, desde el 1-jul-2026, 3 € por tipo de producto. «No pasar del límite» puede dejar productos sin cubrir.</p>
       <div class="fixed-box">
         <p class="label">Proveedores fijos <small class="hint">(se compra en ellos todo lo que vendan y se optimiza el resto)</small></p>
         <div id="fixedChips" class="row wrap"></div>
@@ -139,6 +151,7 @@
       <ul>
         <li>Ningún proveedor tiene verificación A. Los precios «por cotización» son orientativos: hay que pedir precio con envío antes de pagar.</li>
         <li>Los envíos «estimados» son supuestos editables, no datos del vendedor.</li>
+        <li>Paquetes de fuera de la UE: se paga IVA (20 % en Bulgaria) desde el primer euro. Del 1-jul-2026 al 1-jul-2028, los de hasta 150 € pagan además 3 € de arancel por cada tipo de producto; los de más de 150 € van con declaración de aduana completa y aranceles normales.</li>
         <li>Las tabletas son medicamentos con receta en la UE; un envío a un particular puede ser retenido en aduana. Los péptidos y SARM son productos de investigación, no medicamentos autorizados.</li>
       </ul>
     </div>
