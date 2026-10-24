@@ -46,9 +46,17 @@ function lineInfo(o, p) {
   if (!Array.isArray(o.tiers) || !o.tiers.length) return null;
   const c = tierCombo(o.tiers, size); if (!c) return null;
   const fx = S.fx[o.currency] || 1;
-  return { cost: c.price / fx * q, desc: `${o.name || o.desc} — ${c.parts.map(t => t[0]).join(' + ')} uds. (${c.parts.map(t => fmtN(t[1])).join(' + ')} ${o.currency})${c.qty > size ? ` · ${c.qty} en total` : ''}` };
+  return { cost: c.price / fx * q, qty: c.qty,
+    desc: `${o.name || o.desc} — ${c.parts.map(t => t[0]).join(' + ')} uds. (${c.parts.map(t => fmtN(t[1])).join(' + ')} ${o.currency})${c.parts.length > 1 ? ` = ${c.qty} en total` : ''}${c.qty > size ? ` · no vende ${size}` : ''}` };
 }
-const wantText = p => { const size = sizedOf(p); return size ? String(p.target).replace(/×\s*\d[\d–\-]*/, '× ' + size) : p.target; };
+// objetivo con la cantidad que de verdad se compra (qty) o, si no se sabe, la elegida
+const wantText = (p, qty) => { const n = qty || sizedOf(p); return n ? String(p.target).replace(/×\s*\d[\d–\-]*/, '× ' + n) : p.target; };
+// cantidad real de la oferta más barata para la cantidad de prueba elegida
+function bestTrialQty(p) {
+  if (!sizedOf(p)) return null;
+  const li = S.offers.filter(o => o.productId === p.id && o.active && vendorById(o.vendorId)?.active).map(o => lineInfo(o, p)).filter(Boolean).sort((a, b) => a.cost - b.cost)[0];
+  return li ? li.qty : null;
+}
 function vendorShipping(v, net) {
   if (Array.isArray(v.shippingTiers) && v.shippingTiers.length) {
     const t = [...v.shippingTiers].sort((a, b) => a.from - b.from).filter(t => net == null || net >= t.from).pop() || v.shippingTiers[0];
@@ -116,7 +124,7 @@ function optimize() {
   const vIndex = new Map(vend.map((v, i) => [v.id, i]));
   let perProd0 = prods.map(p => S.offers
     .filter(o => o.active && o.productId === p.id && vIndex.has(o.vendorId))
-    .map(o => { const li = lineInfo(o, p); return li && { o, vi: vIndex.get(o.vendorId), cost: li.cost, desc: li.desc }; })
+    .map(o => { const li = lineInfo(o, p); return li && { o, vi: vIndex.get(o.vendorId), cost: li.cost, desc: li.desc, qty: li.qty }; })
     .filter(Boolean)
     .sort((a, b) => a.cost - b.cost));
   // tope de aduana: fuera de la UE, una oferta que por sí sola supera el límite no se puede usar
@@ -310,11 +318,11 @@ function fixedSheet() {
 /* ---------- mensajes de cotización ---------- */
 const EN = [[/Retatrutida/g, 'Retatrutide'], [/Ivermectina/g, 'Ivermectin'], [/Dutasterida/g, 'Dutasteride'], [/Finasterida/g, 'Finasteride'], [/Dapoxetina/g, 'Dapoxetine'],
   [/Tadalafilo/g, 'Tadalafil'], [/Clomifeno/g, 'Clomiphene'], [/Minoxidil oral/g, 'Oral minoxidil'], [/viales/g, 'vials'], [/tabletas/g, 'tablets'], [/cápsulas/g, 'capsules'],
-  [/tira de/g, 'strip of'], [/ uds\./g, ' units'], [/ en total/g, ' in total'], [/ o /g, ' or '], [/(\d),(\d)/g, '$1.$2']];
+  [/tira de/g, 'strip of'], [/ uds\./g, ' units'], [/ en total/g, ' in total'], [/no vende (\d+)/g, 'no $1-unit pack'], [/ o /g, ' or '], [/(\d),(\d)/g, '$1.$2']];
 const toEN = s => EN.reduce((t, [a, b]) => t.replace(a, b), String(s));
 function quoteText(o) {
   const india = /India/.test(o.v.country || '') && o.v.channel === 'b2b';
-  const items = o.lines.map(l => ({ want: `${l.p.name}: ${wantText(l.p)}${(l.p.qty || 1) > 1 ? ` (×${l.p.qty})` : ''}`, listing: l.desc || l.o.desc }));
+  const items = o.lines.map(l => ({ want: `${l.p.name}: ${wantText(l.p, l.qty)}${(l.p.qty || 1) > 1 ? ` (×${l.p.qty})` : ''}`, listing: (l.desc || l.o.desc).replace(/ · no vende \d+/, '') }));
   const en = ['Hello,', '', 'I would like a quote for the following items, shipped to Bulgaria (EU):',
     ...items.map(i => `- ${toEN(i.want)} (your listing: ${toEN(i.listing)})`), '',
     'Could you please confirm:',
@@ -389,7 +397,7 @@ function ordersHTML(r, ri) {
       ${cu ? `<p class="hint customs">${esc(cu.text)}</p>` : ''}
       <p class="pay"><b>Pago:</b> ${esc(v.payment || 'no publicado')}</p>
       ${v.notes ? `<p class="hint">${esc(v.notes)}</p>` : ''}${v.tests ? `<p class="hint"><b>Análisis:</b> ${esc(v.tests)}</p>` : ''}
-      <table class="lines">${o.lines.map(l => `<tr><td>${esc(l.p.name)}${sizedOf(l.p) ? ` <span class="tag warn">prueba: ${sizedOf(l.p)} uds.</span>` : ''}<br><small class="hint">${esc(l.desc || l.o.desc)}${(l.p.qty || 1) > 1 ? ' ×' + l.p.qty : ''}</small>${l.o.url ? `<br><a href="${esc(l.o.url)}" target="_blank" rel="noopener">Ver oferta ↗</a>` : ''}</td><td class="num">${eur(l.cost)}</td></tr>`).join('')}
+      <table class="lines">${o.lines.map(l => `<tr><td>${esc(l.p.name)}${sizedOf(l.p) ? ` <span class="tag warn">prueba: ${l.qty || sizedOf(l.p)} uds.${l.qty > sizedOf(l.p) ? ` (no hay de ${sizedOf(l.p)})` : ''}</span>` : ''}<br><small class="hint">${esc(l.desc || l.o.desc)}${(l.p.qty || 1) > 1 ? ' ×' + l.p.qty : ''}</small>${l.o.url ? `<br><a href="${esc(l.o.url)}" target="_blank" rel="noopener">Ver oferta ↗</a>` : ''}</td><td class="num">${eur(l.cost)}</td></tr>`).join('')}
       ${o.coupon ? `<tr><td>Cupón ${v.couponPct}%</td><td class="num">−${eur(o.coupon)}</td></tr>` : ''}
       <tr><td>Envío${o.shipEst ? ' (estimado)' : ''}</td><td class="num">${o.ship ? eur(o.ship) : 'gratis'}</td></tr></table>
       <div class="row wrap"><button class="ghost slim qBtn" data-r="${ri}" data-o="${oi}">Pedir cotización</button>${v.url ? `<a class="btn ghost slim" href="${esc(v.url)}" target="_blank" rel="noopener">Web ↗</a>` : ''}</div></div>`;
@@ -407,8 +415,8 @@ function renderResults(res) {
   const notFilter = res.noOffer.filter(p => !res.byFilter.includes(p));
   if (notFilter.length) warn.push(`<span class="tag bad">Sin ninguna oferta activa: ${notFilter.map(p => esc(p.name)).join(', ')}</span>`);
   if (r.estShip) warn.push(`<span class="tag warn">${r.estShip} envío(s) estimado(s)</span>`);
-  const trial = S.products.filter(p => p.active && sizedOf(p));
-  if (trial.length) warn.push(`<span class="tag warn">Pedido de prueba (cantidad reducida): ${trial.map(p => esc(p.name) + ' ' + sizedOf(p)).join(', ')}</span>`);
+  const trial = r.orders.flatMap(o => o.lines).filter(l => sizedOf(l.p));
+  if (trial.length) warn.push(`<span class="tag warn">Pedido de prueba: ${trial.map(l => esc(l.p.name) + ' ' + (l.qty || sizedOf(l.p)) + (l.qty > sizedOf(l.p) ? ` (pediste ${sizedOf(l.p)})` : '')).join(', ')}</span>`);
   const overN = r.orders.filter(o => customsInfo(o)?.over).length;
   if (overN) warn.push(`<span class="tag bad">${overN} paquete(s) postal(es) de fuera de la UE superan ${eur(res.lim)}</span>`);
   if (res.overCap.length) warn.push(`<span class="tag bad">Superan ${eur(res.lim)} por sí solos (no se compran por correo de fuera de la UE): ${res.overCap.map(p => esc(p.name)).join(', ')}</span>`);
@@ -461,7 +469,8 @@ function renderProducts() {
     const min = costs.length ? Math.min(...costs) : null;
     return `<details class="prod" data-id="${p.id}" ${open.has(String(p.id)) ? 'open' : ''}>
       <summary><input type="checkbox" class="pActive" data-id="${p.id}" ${p.active ? 'checked' : ''} aria-label="Activar ${esc(p.name)}">
-        <span class="name">${esc(p.name)}<small>${esc(wantText(p))}${sizedOf(p) ? ' (prueba)' : ''} · ${esc(p.category)}</small></span>
+        <span class="name">${esc(p.name)}<small>${(() => { const bq = bestTrialQty(p), sz = sizedOf(p);
+          return sz ? `${esc(wantText(p, bq))} (prueba${bq > sz ? `; no hay caja de ${sz}` : bq ? '' : `; ninguna oferta para ${sz}`})` : esc(p.target); })()} · ${esc(p.category)}</small></span>
         <span class="best">${min != null ? 'desde ' + eur(min) : 'sin oferta'}</span></summary>
       <div class="body">
         <div class="grid2">
@@ -470,7 +479,8 @@ function renderProducts() {
         </div>
         ${SIZED.has(p.category) ? `<label>Cantidad para este pedido<select class="pSize" data-id="${p.id}">
           <option value="">Objetivo completo (${esc(p.target)})</option>
-          ${SIZE_OPTS.map(n => `<option value="${n}" ${p.size === n ? 'selected' : ''}>${n} unidades (pedido de prueba)</option>`).join('')}</select></label>` : ''}
+          ${SIZE_OPTS.map(n => `<option value="${n}" ${p.size === n ? 'selected' : ''}>${n} unidades</option>`).join('')}</select></label>
+          <p class="hint">Si una tienda no vende esa cantidad, se usa su caja más pequeña que llegue (se indica en cada oferta).</p>` : ''}
         ${offs.map(o => ({ o, c: lineInfo(o, p)?.cost ?? Infinity })).sort((a, b) => a.c - b.c).map(x => offerRow(x.o, p)).join('') || '<p class="hint">Sin ofertas.</p>'}
         <button class="ghost slim addOffer" data-id="${p.id}">+ Añadir oferta</button>
         <div class="newOffer" data-id="${p.id}"></div>
