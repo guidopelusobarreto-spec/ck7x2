@@ -23,7 +23,7 @@ const vendorById = id => S.vendors.find(v => v.id === id);
 const productById = id => S.products.find(p => p.id === id);
 function offerEUR(o) { const fx = S.fx[o.currency] || 1; return o.price * o.units / fx; }
 /* pastillas: se puede pedir una cantidad menor (100 o 200) para un pedido de prueba; los péptidos van siempre en kits de 10 viales */
-const SIZED = new Set(['Tableta', 'SARM']), SIZE_OPTS = [100, 200];
+const SIZED = new Set(['Tableta', 'SARM']), SIZE_OPTS = [50, 100, 200];
 const sizedOf = p => SIZED.has(p.category) && p.size ? p.size : null;
 // coste mínimo para llegar al menos a «need» unidades combinando las presentaciones (repetibles) de la tienda
 function tierCombo(tiers, need) {
