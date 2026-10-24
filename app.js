@@ -22,6 +22,33 @@ function load() { try { const r = localStorage.getItem(STORE_KEY); return r ? JS
 const vendorById = id => S.vendors.find(v => v.id === id);
 const productById = id => S.products.find(p => p.id === id);
 function offerEUR(o) { const fx = S.fx[o.currency] || 1; return o.price * o.units / fx; }
+/* pastillas: se puede pedir una cantidad menor (100 o 200) para un pedido de prueba; los péptidos van siempre en kits de 10 viales */
+const SIZED = new Set(['Tableta', 'SARM']), SIZE_OPTS = [100, 200];
+const sizedOf = p => SIZED.has(p.category) && p.size ? p.size : null;
+// coste mínimo para llegar al menos a «need» unidades combinando las presentaciones (repetibles) de la tienda
+function tierCombo(tiers, need) {
+  const maxN = Math.max(...tiers.map(t => t[0])), lim = need + maxN;
+  const best = new Array(lim + 1).fill(Infinity), from = new Array(lim + 1).fill(-1);
+  best[0] = 0;
+  for (let c = 1; c <= lim; c++) tiers.forEach(([n, pr], i) => { if (n <= c && best[c - n] + pr < best[c] - 1e-9) { best[c] = best[c - n] + pr; from[c] = i; } });
+  let bc = -1;
+  for (let c = need; c <= lim; c++) if (best[c] < Infinity && (bc < 0 || best[c] < best[bc] - 1e-9)) bc = c;
+  if (bc < 0) return null;
+  const parts = [];
+  for (let c = bc; c > 0; c -= tiers[from[c]][0]) parts.push(tiers[from[c]]);
+  return { price: best[bc], qty: bc, parts: parts.sort((a, b) => b[0] - a[0]) };
+}
+const fmtN = x => String(Math.round(x * 100) / 100).replace('.', ',');
+// coste en € y descripción de una oferta para lo que se pide del producto; null = esa oferta no sirve para esa cantidad
+function lineInfo(o, p) {
+  const q = p.qty || 1, size = sizedOf(p);
+  if (!size) return { cost: offerEUR(o) * q, desc: o.desc };
+  if (!Array.isArray(o.tiers) || !o.tiers.length) return null;
+  const c = tierCombo(o.tiers, size); if (!c) return null;
+  const fx = S.fx[o.currency] || 1;
+  return { cost: c.price / fx * q, desc: `${o.name || o.desc} — ${c.parts.map(t => t[0]).join(' + ')} uds. (${c.parts.map(t => fmtN(t[1])).join(' + ')} ${o.currency})${c.qty > size ? ` · ${c.qty} en total` : ''}` };
+}
+const wantText = p => { const size = sizedOf(p); return size ? String(p.target).replace(/×\s*\d[\d–\-]*/, '× ' + size) : p.target; };
 function vendorShipping(v, net) {
   if (Array.isArray(v.shippingTiers) && v.shippingTiers.length) {
     const t = [...v.shippingTiers].sort((a, b) => a.from - b.from).filter(t => net == null || net >= t.from).pop() || v.shippingTiers[0];
@@ -89,7 +116,8 @@ function optimize() {
   const vIndex = new Map(vend.map((v, i) => [v.id, i]));
   let perProd0 = prods.map(p => S.offers
     .filter(o => o.active && o.productId === p.id && vIndex.has(o.vendorId))
-    .map(o => ({ o, vi: vIndex.get(o.vendorId), cost: offerEUR(o) * (p.qty || 1) }))
+    .map(o => { const li = lineInfo(o, p); return li && { o, vi: vIndex.get(o.vendorId), cost: li.cost, desc: li.desc }; })
+    .filter(Boolean)
     .sort((a, b) => a.cost - b.cost));
   // tope de aduana: fuera de la UE, una oferta que por sí sola supera el límite no se puede usar
   const overCap = [];
@@ -282,11 +310,11 @@ function fixedSheet() {
 /* ---------- mensajes de cotización ---------- */
 const EN = [[/Retatrutida/g, 'Retatrutide'], [/Ivermectina/g, 'Ivermectin'], [/Dutasterida/g, 'Dutasteride'], [/Finasterida/g, 'Finasteride'], [/Dapoxetina/g, 'Dapoxetine'],
   [/Tadalafilo/g, 'Tadalafil'], [/Clomifeno/g, 'Clomiphene'], [/Minoxidil oral/g, 'Oral minoxidil'], [/viales/g, 'vials'], [/tabletas/g, 'tablets'], [/cápsulas/g, 'capsules'],
-  [/tira de/g, 'strip of'], [/ o /g, ' or '], [/(\d),(\d)/g, '$1.$2']];
+  [/tira de/g, 'strip of'], [/ uds\./g, ' units'], [/ en total/g, ' in total'], [/ o /g, ' or '], [/(\d),(\d)/g, '$1.$2']];
 const toEN = s => EN.reduce((t, [a, b]) => t.replace(a, b), String(s));
 function quoteText(o) {
   const india = /India/.test(o.v.country || '') && o.v.channel === 'b2b';
-  const items = o.lines.map(l => ({ want: `${l.p.name}: ${l.p.target}${(l.p.qty || 1) > 1 ? ` (×${l.p.qty})` : ''}`, listing: l.o.desc }));
+  const items = o.lines.map(l => ({ want: `${l.p.name}: ${wantText(l.p)}${(l.p.qty || 1) > 1 ? ` (×${l.p.qty})` : ''}`, listing: l.desc || l.o.desc }));
   const en = ['Hello,', '', 'I would like a quote for the following items, shipped to Bulgaria (EU):',
     ...items.map(i => `- ${toEN(i.want)} (your listing: ${toEN(i.listing)})`), '',
     'Could you please confirm:',
@@ -326,7 +354,7 @@ function orderText(r) {
   const out = [];
   r.orders.forEach(o => {
     out.push(`== ${o.v.name} ==`);
-    o.lines.forEach(l => out.push(`- ${l.p.name}: ${l.o.desc}${(l.p.qty || 1) > 1 ? ' ×' + l.p.qty : ''} — ${eur(l.cost)}`));
+    o.lines.forEach(l => out.push(`- ${l.p.name}: ${l.desc || l.o.desc}${(l.p.qty || 1) > 1 ? ' ×' + l.p.qty : ''} — ${eur(l.cost)}`));
     out.push(`Subtotal ${eur(o.subtotal)}${o.coupon ? ' · cupón −' + eur(o.coupon) : ''} · envío ${o.ship ? eur(o.ship) + (o.shipEst ? ' (estimado)' : '') : 'gratis'}`);
     const cu = customsInfo(o); if (cu) out.push(cu.text);
     out.push('');
@@ -361,7 +389,7 @@ function ordersHTML(r, ri) {
       ${cu ? `<p class="hint customs">${esc(cu.text)}</p>` : ''}
       <p class="pay"><b>Pago:</b> ${esc(v.payment || 'no publicado')}</p>
       ${v.notes ? `<p class="hint">${esc(v.notes)}</p>` : ''}${v.tests ? `<p class="hint"><b>Análisis:</b> ${esc(v.tests)}</p>` : ''}
-      <table class="lines">${o.lines.map(l => `<tr><td>${esc(l.p.name)}<br><small class="hint">${esc(l.o.desc)}${(l.p.qty || 1) > 1 ? ' ×' + l.p.qty : ''}</small>${l.o.url ? `<br><a href="${esc(l.o.url)}" target="_blank" rel="noopener">Ver oferta ↗</a>` : ''}</td><td class="num">${eur(l.cost)}</td></tr>`).join('')}
+      <table class="lines">${o.lines.map(l => `<tr><td>${esc(l.p.name)}${sizedOf(l.p) ? ` <span class="tag warn">prueba: ${sizedOf(l.p)} uds.</span>` : ''}<br><small class="hint">${esc(l.desc || l.o.desc)}${(l.p.qty || 1) > 1 ? ' ×' + l.p.qty : ''}</small>${l.o.url ? `<br><a href="${esc(l.o.url)}" target="_blank" rel="noopener">Ver oferta ↗</a>` : ''}</td><td class="num">${eur(l.cost)}</td></tr>`).join('')}
       ${o.coupon ? `<tr><td>Cupón ${v.couponPct}%</td><td class="num">−${eur(o.coupon)}</td></tr>` : ''}
       <tr><td>Envío${o.shipEst ? ' (estimado)' : ''}</td><td class="num">${o.ship ? eur(o.ship) : 'gratis'}</td></tr></table>
       <div class="row wrap"><button class="ghost slim qBtn" data-r="${ri}" data-o="${oi}">Pedir cotización</button>${v.url ? `<a class="btn ghost slim" href="${esc(v.url)}" target="_blank" rel="noopener">Web ↗</a>` : ''}</div></div>`;
@@ -379,6 +407,8 @@ function renderResults(res) {
   const notFilter = res.noOffer.filter(p => !res.byFilter.includes(p));
   if (notFilter.length) warn.push(`<span class="tag bad">Sin ninguna oferta activa: ${notFilter.map(p => esc(p.name)).join(', ')}</span>`);
   if (r.estShip) warn.push(`<span class="tag warn">${r.estShip} envío(s) estimado(s)</span>`);
+  const trial = S.products.filter(p => p.active && sizedOf(p));
+  if (trial.length) warn.push(`<span class="tag warn">Pedido de prueba (cantidad reducida): ${trial.map(p => esc(p.name) + ' ' + sizedOf(p)).join(', ')}</span>`);
   const overN = r.orders.filter(o => customsInfo(o)?.over).length;
   if (overN) warn.push(`<span class="tag bad">${overN} paquete(s) postal(es) de fuera de la UE superan ${eur(res.lim)}</span>`);
   if (res.overCap.length) warn.push(`<span class="tag bad">Superan ${eur(res.lim)} por sí solos (no se compran por correo de fuera de la UE): ${res.overCap.map(p => esc(p.name)).join(', ')}</span>`);
@@ -427,17 +457,21 @@ function renderProducts() {
   list.innerHTML = S.products.map(p => {
     const offs = S.offers.filter(o => o.productId === p.id);
     const act = offs.filter(o => o.active && vendorById(o.vendorId)?.active);
-    const min = act.length ? Math.min(...act.map(o => offerEUR(o) * (p.qty || 1))) : null;
+    const costs = act.map(o => lineInfo(o, p)).filter(Boolean).map(x => x.cost);
+    const min = costs.length ? Math.min(...costs) : null;
     return `<details class="prod" data-id="${p.id}" ${open.has(String(p.id)) ? 'open' : ''}>
       <summary><input type="checkbox" class="pActive" data-id="${p.id}" ${p.active ? 'checked' : ''} aria-label="Activar ${esc(p.name)}">
-        <span class="name">${esc(p.name)}<small>${esc(p.target)} · ${esc(p.category)}</small></span>
+        <span class="name">${esc(p.name)}<small>${esc(wantText(p))}${sizedOf(p) ? ' (prueba)' : ''} · ${esc(p.category)}</small></span>
         <span class="best">${min != null ? 'desde ' + eur(min) : 'sin oferta'}</span></summary>
       <div class="body">
         <div class="grid2">
           <label>Objetivo<input type="text" class="pTarget" data-id="${p.id}" value="${esc(p.target)}"></label>
           <label>Lotes del objetivo<input type="number" min="1" step="1" class="pQty" data-id="${p.id}" value="${p.qty || 1}" inputmode="numeric"></label>
         </div>
-        ${offs.sort((a, b) => offerEUR(a) - offerEUR(b)).map(o => offerRow(o, p)).join('') || '<p class="hint">Sin ofertas.</p>'}
+        ${SIZED.has(p.category) ? `<label>Cantidad para este pedido<select class="pSize" data-id="${p.id}">
+          <option value="">Objetivo completo (${esc(p.target)})</option>
+          ${SIZE_OPTS.map(n => `<option value="${n}" ${p.size === n ? 'selected' : ''}>${n} unidades (pedido de prueba)</option>`).join('')}</select></label>` : ''}
+        ${offs.map(o => ({ o, c: lineInfo(o, p)?.cost ?? Infinity })).sort((a, b) => a.c - b.c).map(x => offerRow(x.o, p)).join('') || '<p class="hint">Sin ofertas.</p>'}
         <button class="ghost slim addOffer" data-id="${p.id}">+ Añadir oferta</button>
         <div class="newOffer" data-id="${p.id}"></div>
       </div></details>`;
@@ -445,11 +479,12 @@ function renderProducts() {
   bindProductEvents();
 }
 function offerRow(o, p) {
-  const v = vendorById(o.vendorId);
+  const v = vendorById(o.vendorId), li = lineInfo(o, p);
+  const tiers = Array.isArray(o.tiers) && o.tiers.length ? ` · presentaciones: ${o.tiers.map(t => `${t[0]} = ${fmtN(t[1])}`).join(' · ')} ${esc(o.currency)}` : '';
   return `<div class="offer" data-oid="${o.id}">
     <input type="checkbox" class="oActive" data-oid="${o.id}" ${o.active ? 'checked' : ''} aria-label="Usar oferta">
-    <div><b>${esc(v ? v.name : o.vendorId)}</b>${v && !v.active ? ' <span class="tag bad">proveedor desactivado</span>' : ''}<div class="meta">${esc(o.desc)} · ${o.price} ${esc(o.currency)} × ${o.units} · ${esc(o.status || '')}${o.url ? ` · <a href="${esc(o.url)}" target="_blank" rel="noopener">fuente</a>` : ''}</div></div>
-    <div class="side"><span class="eur">${eur(offerEUR(o) * (p.qty || 1))}</span><button class="mini oEdit" data-oid="${o.id}">Editar</button></div>
+    <div><b>${esc(v ? v.name : o.vendorId)}</b>${v && !v.active ? ' <span class="tag bad">proveedor desactivado</span>' : ''}<div class="meta">${esc(li ? li.desc : o.desc)}${sizedOf(p) ? '' : ` · ${o.price} ${esc(o.currency)} × ${o.units}`}${tiers} · ${esc(o.status || '')}${o.url ? ` · <a href="${esc(o.url)}" target="_blank" rel="noopener">fuente</a>` : ''}</div></div>
+    <div class="side"><span class="eur">${li ? eur(li.cost) : `sin precio para ${sizedOf(p)}`}</span><button class="mini oEdit" data-oid="${o.id}">Editar</button></div>
     <div class="edit"><div class="grid3">
       <label>Precio<input type="number" step="0.01" class="oPrice" data-oid="${o.id}" value="${o.price}" inputmode="decimal"></label>
       <label>Divisa<select class="oCur" data-oid="${o.id}">${Object.keys(S.fx).map(c => `<option ${c === o.currency ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
@@ -463,6 +498,7 @@ function bindProductEvents() {
   $$('.pActive').forEach(c => { c.addEventListener('click', e => e.stopPropagation()); c.addEventListener('change', () => { productById(+c.dataset.id).active = c.checked; save(); }); });
   $$('.pTarget').forEach(i => i.addEventListener('change', () => { const p = productById(+i.dataset.id); p.target = i.value; p.targetUser = true; save(); renderProducts(); }));
   $$('.pQty').forEach(i => i.addEventListener('change', () => { productById(+i.dataset.id).qty = Math.max(1, parseInt(i.value) || 1); save(); renderProducts(); }));
+  $$('.pSize').forEach(i => i.addEventListener('change', () => { productById(+i.dataset.id).size = i.value ? +i.value : null; save(); renderProducts(); }));
   $$('.oActive').forEach(c => c.addEventListener('change', () => { S.offers.find(o => o.id === c.dataset.oid).active = c.checked; save(); renderProducts(); }));
   $$('.oEdit').forEach(b => b.addEventListener('click', () => b.closest('.offer').classList.toggle('editing')));
   const upd = (sel, key, fn) => $$(sel).forEach(i => i.addEventListener('change', () => { const o = S.offers.find(x => x.id === i.dataset.oid); const val = fn(i.value); if (val == null) return toast('Valor no válido'); o[key] = val; save(); renderProducts(); }));
@@ -538,7 +574,7 @@ function validData(d) { return d && Array.isArray(d.products) && Array.isArray(d
 // Datos nuevos + tus selecciones: productos activos y cantidades, ofertas desactivadas, tus ofertas y proveedores añadidos, condiciones.
 function mergeKeep(prev, d) {
   if (prev && prev.products.length) {
-    d.products.forEach(p => { const q = prev.products.find(x => x.id === p.id); if (q) { p.active = q.active; p.qty = q.qty; if (q.targetUser) { p.target = q.target; p.targetUser = true; } } });
+    d.products.forEach(p => { const q = prev.products.find(x => x.id === p.id); if (q) { p.active = q.active; p.qty = q.qty; if (q.size) p.size = q.size; if (q.targetUser) { p.target = q.target; p.targetUser = true; } } });
     d.offers.forEach(o => { const q = prev.offers.find(x => x.productId === o.productId && x.vendorId === o.vendorId && x.desc === o.desc); if (q) o.active = q.active; });
     prev.offers.filter(o => String(o.id).startsWith('u') && !d.offers.some(x => x.id === o.id)).forEach(o => d.offers.push(o));
     // solo se conservan los proveedores añadidos por el usuario; los retirados de los datos no vuelven
